@@ -14,7 +14,17 @@
 #define PATHMAXLENGTH	 250
 #define LOGSQUEMAXLENGTH 50
 
-struct logsque
+
+
+typedef struct log
+{
+	char log[LOGDATAMAXLENGTH];
+	int len;
+	int state;//0 :enmpty  1 have data
+	int op;//0:write log 1:start a new logfile 2:save current log file
+	char path[PATHMAXLENGTH];//path name
+}LOGDATA;
+typedef struct logsque
 {
 	LOGDATA Logs[LOGSQUEMAXLENGTH];
 	int indexhead;
@@ -24,30 +34,32 @@ struct logsque
 	
 }LOGSQUE;
 
-struct log
-{
-	char log[LOGDATAMAXLENGTH];
-	int len;
-	int state;//0 :enmpty  1 have data
-	int op;//0:write log 1:start a new logfile 2:save current log file
-	char path[PATHMAXLENGTH];//path name
-}LOGDATA;
-
 LOGSQUE logSque;
-static void log_handler(int sig_num);
+struct sched_param			clock_interrupt_thread_sched;
+pthread_attr_t			clock_interrupt_thread_attr;
+pthread_t			clock_interrupt_thread;
+
+static int Thread_Attr_Set( pthread_attr_t *attr, struct sched_param *sched );
+
+static void log_handler(void);
+static void * pFun(void *ptr);
 static char makefilesFlow(char Path[]);
 char initLogM()
 {
 	char ret = 0;
 	int i = 0;
-	signal(SIGALRM, log_handler);
-	struct itimerval olditv;
-	struct itimerval itv;
-	itv.it_interval.tv_sec = 0; //定时周期为1秒钟。
-	itv.it_interval.tv_usec = 3000;
-	itv.it_value.tv_sec = 0; //定时器启动以后将在50微秒以后正式开始计时。
-	itv.it_value.tv_usec = 50;
-	setitimer(ITIMER_REAL, &itv, &olditv);
+	int status;
+	
+	clock_interrupt_thread_sched.sched_priority = 1;	
+	status = Thread_Attr_Set(&clock_interrupt_thread_attr, &clock_interrupt_thread_sched);
+
+	status = pthread_create(&clock_interrupt_thread, \
+							&clock_interrupt_thread_attr, \
+							(void *)pFun, \
+							(void *)NULL);
+
+
+		
 	
 	logSque.indexhead = 1;
 	logSque.indextail = 0;
@@ -85,7 +97,7 @@ char newLogFile(char *name)
 		logSque.Logs[logSque.indexhead].state = 0;
 		memset(logSque.Logs[logSque.indexhead].path,0,PATHMAXLENGTH);
 		memcpy(logSque.Logs[logSque.indexhead].path,name,strlen(name));
-		Logs[logSque.indexhead].op = 1;
+		logSque.Logs[logSque.indexhead].op = 1;
 		
 		logSque.indexhead = indexnexthead;
 	}
@@ -113,8 +125,8 @@ char putLog(char *log,int len)
 		logSque.Logs[logSque.indexhead].state = 0;
 		memset(logSque.Logs[logSque.indexhead].log,0,LOGDATAMAXLENGTH);
 		memcpy(logSque.Logs[logSque.indexhead].log,log,len);
-		Logs[logSque.indexhead].len = len;
-		Logs[logSque.indexhead].op = 0;
+		logSque.Logs[logSque.indexhead].len = len;
+		logSque.Logs[logSque.indexhead].op = 0;
 		
 		logSque.indexhead = indexnexthead;
 	}
@@ -143,7 +155,7 @@ char saveLogFile()
 	{
 		logSque.Logs[logSque.indexhead].state = 0;
 		
-		Logs[logSque.indexhead].op = 2;
+		logSque.Logs[logSque.indexhead].op = 2;
 		
 		logSque.indexhead = indexnexthead;
 	}
@@ -152,17 +164,19 @@ char saveLogFile()
 	
 	return ret;
 }
-void log_handler(int sig_num)
-{	char ret = 0;
+void log_handler(void)
+{	
+	printf("log_handler \n");
+	char ret = 0;
 	int i = 0;
 	LOGDATA Log;
-	destNamePath[PATHMAXLENGTH] = {0};
+	char destNamePath[PATHMAXLENGTH] = {0};
 	int indextailnext = logSque.indextail;
-	if(sig_num = SIGALRM)
+	printf("head = %d,tail = %d",logSque.indexhead,logSque.indextail);
+	if(1)
 	{
 		pthread_spin_lock(&(logSque.spinlock)); //上锁
-		log = logSque.Logs[logSque.indextail];
-		logSque.Logs[logSque.indextail].
+		Log = logSque.Logs[logSque.indextail];		
 
 		memset(logSque.Logs[logSque.indextail].log,0,LOGDATAMAXLENGTH);
 		logSque.Logs[logSque.indextail].len = 0;
@@ -187,24 +201,24 @@ void log_handler(int sig_num)
 		}	
 		pthread_spin_unlock(&(logSque.spinlock)); //解锁
 
-		switch(log.op)
+		switch(Log.op)
 		{
 			case 0:
-			if((log.len == 0)||(logSque.fd == NULL))
+			if((Log.len == 0)||(logSque.fp == NULL))
 			{
 				break;
 			}
-			fwrite(log.log, log.len, 1, logSque.fp);	
+			fwrite(Log.log, Log.len, 1, logSque.fp);	
 			
 			break;
 			case 1:
 			if(ret==0)
 			{
-				for(i = 0; i <= strlen(log.path); i++)
+				for(i = 0; i <= strlen(Log.path); i++)
 				{
-					destNamePath[i] = log.path[i];
+					destNamePath[i] = Log.path[i];
 				}
-				for(i = strlen(log.path); i > 0; i--)
+				for(i = strlen(Log.path); i > 0; i--)
 				{
 					if(destNamePath[i] != '/')
 					{
@@ -225,10 +239,10 @@ void log_handler(int sig_num)
 
 			if (0 == ret)
 			{	logSque.fp = NULL;
-				logSque.fp = fopen(log.path, "rb+");
+				logSque.fp = fopen(Log.path, "rb+");
 				if (NULL == logSque.fp)
 				{
-					fp = fopen(log.path, "wb+");
+					logSque.fp = fopen(Log.path, "wb+");
 					if (NULL != logSque.fp)
 					{
 						ret = 0;
@@ -299,7 +313,48 @@ char makefilesFlow(char Path[])
 	return ret;
 }
 
+static int Thread_Attr_Set( pthread_attr_t *attr, struct sched_param *sched )
+{
+    int iStatus;
+    iStatus = pthread_attr_init( attr );
+    if( iStatus != 0 )
+    {
+        fprintf(stderr, "[pthread_attr_init]failed.  Terminating with an error\n");
+        return -1;
+    }
 
+    iStatus = pthread_attr_setinheritsched( attr, PTHREAD_EXPLICIT_SCHED );
+    if( iStatus != 0 )
+    {
+        fprintf(stderr, "[pthread_attr_setinheritsched]failed.  Terminating with an error\n");
+        return -1;
+    }
+
+    iStatus = pthread_attr_setschedpolicy( attr, SCHED_FIFO );
+    if( iStatus != 0 )
+    {
+        fprintf(stderr, "Thread Schedule Policy failed.  Terminating with an error\n");
+        return -1;
+    }
+    
+    iStatus = pthread_attr_setschedparam( attr, sched );
+    if(iStatus != 0)
+    {
+        fprintf(stderr, "[pthread_attr_setschedparam]failed.  Terminating with an error\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+void * pFun(void *ptr)
+{
+	while(1)
+	{
+		log_handler();
+		usleep(5000);
+	}
+}
 
 
 
